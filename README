@@ -1,0 +1,13 @@
+Trying to reverse engineer Suunto's sync protocol to enable reading data
+from the watch on Linux.
+
+Current progress:
+Installed Moveslink on Windows virtual machine running on VirtualBox.
+USB PC Pod connected to VM. Wireshark running on Linux host PC.
+
+Successfully captured USB data of sync between Suunto Moveslink software
+and t3c watch. (see suunto-sync-usb.pcap)
+
+Now writing Python/libpcap script to parse captured USB data, so I can
+extract the Suunto comms.
+
