@@ -1,7 +1,6 @@
 #! /usr/bin/env python
 """
-Example to sniff all HTTP traffic on eth0 interface:
-    sudo ./sniff.py eth0 "port 80"
+Decode LINKTYPE_USB_LINUX_MMAPPED packets in a pcap file
 """
 
 import sys
