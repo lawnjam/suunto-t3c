@@ -37,6 +37,7 @@ def decode_ip_packet(s):
     return d
 
 def decode_usb_packet(s):
+# structure as per kernel/Documentation/usb/usbmon.txt
     d = {}
     # u64 id;         /*  0: URB ID - from submission to callback */
     d['id'] = s[0:8][::-1].encode('hex')
@@ -111,12 +112,49 @@ def print_packet(pktlen, data, timestamp):
         print '    data:'
         dumphex(decoded['data'])
     decoded = decode_usb_packet(data)
-    print datetime.datetime.fromtimestamp(timestamp)
-    for key in ['id', 'type', 'xfer_type', 'epnum', 'devnum', 'busnum', 'flag_setup', 'flag_data', 
-            'ts_sec', 'ts_usec', 'status', 'length', 'len_cap', 'SETUP_LEN', 'error_count', 'numdesc',
-            'interval', 'start_frame', 'xfer_flags', 'ndesc']:
-        print '    %s: %s' % (key, decoded[key])
-    print '    data: ', decoded['data'].encode('hex')
+#    print datetime.datetime.fromtimestamp(timestamp)
+#    for key in ['epnum', 'devnum', '']:
+#        print '%s: %s' % (key, decoded[key])
+#    for key in ['id', 'type', 'xfer_type', 'epnum', 'devnum', 'busnum', 'flag_setup', 'flag_data', 
+#            'ts_sec', 'ts_usec', 'status', 'length', 'len_cap', 'SETUP_LEN', 'error_count', 'numdesc',
+#            'interval', 'start_frame', 'xfer_flags', 'ndesc']:
+        #print '%s: %s' % (key, decoded[key])
+
+
+    ant_message_types = {
+        '3d': '???                    ',
+        '40': 'ChannelEvent           ',
+        '42': 'AssignChannel          ',
+        '43': 'SetChannelPeriod       ',
+        '45': 'SetChannelRFFreq       ',
+        '4a': 'ResetSystem            ',
+        '4b': 'OpenChannel            ',
+        '4c': 'CloseChannel           ',
+        '4d': 'RequestMessage         ',
+        '4e': 'SendBroadcastData      ',
+        '4f': 'SendAcknowledgedData   ',
+        '50': 'SendBurstTransferPacket',
+        '51': 'SetChannelId           ',
+        '54': 'Capabilities           ',
+        }
+    if len(decoded['data']) > 0:
+        # print decoded['epnum'], ' ', decoded['devnum'], 'data: ', decoded['data'].encode('hex')
+        if decoded['data'][0:1] == '\xA4':
+            # ANT SYNC byte found
+            length = int(decoded['data'][1:2].encode('hex'), 16)
+            msg_id = decoded['data'][2:3].encode('hex')
+            if decoded['epnum'] == '01':
+                epnum = 'host '
+            else:
+                epnum = 'watch'
+            print epnum, 'L', length, 'ID', msg_id, ant_message_types[msg_id], 'data', decoded['data'][3:3+length].encode('hex')
+
+            #print 'all data', decoded['data'].encode('hex')
+            #print 'checksum', decoded['data'][3+length:3+length+1].encode('hex')
+
+
+
+    #print 'data: ', decoded['data'].encode('hex')
 
 
 if __name__=='__main__':
