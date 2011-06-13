@@ -15,6 +15,10 @@ protocols={socket.IPPROTO_TCP:'tcp',
             socket.IPPROTO_UDP:'udp',
             socket.IPPROTO_ICMP:'icmp'}
 
+burst_data = ''
+shortfall = 0
+t3c_epnum = 0
+
 def decode_ip_packet(s):
     d={}
     d['version']=(ord(s[0]) & 0xf0) >> 4
@@ -97,20 +101,6 @@ def print_packet(pktlen, data, timestamp):
     if not data:
         return
 
-    if data[12:14]=='\x08\x00':
-        decoded=decode_ip_packet(data[14:])
-        print '\n%s.%f %s > %s' % (time.strftime('%H:%M',
-                                time.localtime(timestamp)),
-                                timestamp % 60,
-                                decoded['source_address'],
-                                decoded['destination_address'])
-        for key in ['version', 'header_len', 'tos', 'total_len', 'id',
-                                'flags', 'fragment_offset', 'ttl']:
-            print '    %s: %d' % (key, decoded[key])
-        print '    protocol: %s' % protocols[decoded['protocol']]
-        print '    header checksum: %d' % decoded['checksum']
-        print '    data:'
-        dumphex(decoded['data'])
     decoded = decode_usb_packet(data)
 #    print datetime.datetime.fromtimestamp(timestamp)
 #    for key in ['epnum', 'devnum', '']:
@@ -121,6 +111,33 @@ def print_packet(pktlen, data, timestamp):
         #print '%s: %s' % (key, decoded[key])
 
 
+    if len(decoded['data']) > 0:
+        #print decoded['epnum'], ' ', decoded['devnum'], 'data: ', decoded['data'].encode('hex')
+        if decoded['data'][0:1] == '\xA4':
+            # ANT SYNC byte found
+            print_ANT_packet(decoded)
+        else:
+            global shortfall, burst_data
+            if shortfall > 0 and decoded['epnum'] == t3c_epnum:
+                burst_data += decoded['data'][0:shortfall].encode('hex')
+                oldsf = shortfall
+                shortfall = shortfall - len(decoded['data'])
+                if shortfall < 0 and decoded['data'][oldsf:oldsf+1] == '\xA4':
+                    # additional ant packet
+                    #print decoded['data'][shortfall:len(decoded['data'])+1].encode('hex')
+                    #print decoded['data'].encode('hex'), decoded['data'][oldsf:len(decoded['data'])].encode('hex')
+                    decoded['data'] = decoded['data'][oldsf:len(decoded['data'])]
+                    print_ANT_packet(decoded)
+                #print 'shortfall ', shortfall
+            #else:
+                #print decoded['type'], decoded['xfer_type']
+            if shortfall < 1:
+                shortfall = 0
+
+            #print 'all data', decoded['data'].encode('hex')
+            #print 'checksum', decoded['data'][3+length:3+length+1].encode('hex')
+    #print 'data: ', decoded['data'].encode('hex')
+def print_ANT_packet(decoded):
     ant_message_types = {
         '3d': '???                    ',
         '40': 'ChannelEvent           ',
@@ -137,24 +154,22 @@ def print_packet(pktlen, data, timestamp):
         '51': 'SetChannelId           ',
         '54': 'Capabilities           ',
         }
-    if len(decoded['data']) > 0:
-        # print decoded['epnum'], ' ', decoded['devnum'], 'data: ', decoded['data'].encode('hex')
-        if decoded['data'][0:1] == '\xA4':
-            # ANT SYNC byte found
-            length = int(decoded['data'][1:2].encode('hex'), 16)
-            msg_id = decoded['data'][2:3].encode('hex')
-            if decoded['epnum'] == '01':
-                epnum = 'host '
-            else:
-                epnum = 'watch'
-            print epnum, 'L', length, 'ID', msg_id, ant_message_types[msg_id], 'data', decoded['data'][3:3+length].encode('hex')
-
-            #print 'all data', decoded['data'].encode('hex')
-            #print 'checksum', decoded['data'][3+length:3+length+1].encode('hex')
-
-
-
-    #print 'data: ', decoded['data'].encode('hex')
+    length = int(decoded['data'][1:2].encode('hex'), 16)
+    msg_id = decoded['data'][2:3].encode('hex')
+    if decoded['epnum'] == '01':
+        epnum = 'host '
+    else:
+        epnum = 'watch'
+    #print epnum, 'L', length, 'ID', msg_id, ant_message_types[msg_id], 'data', decoded['data'][3:3+length].encode('hex')
+    global burst_data, shortfall, t3c_epnum
+    if msg_id == '50':
+        # first byte on burst packets is sequence number (upper 3 bits)
+        # and channel number (lower 5 bits)
+        burst_data += decoded['data'][4:3+length].encode('hex') # skip first byte
+        shortfall = length - len(decoded['data'][4:3+length])
+        t3c_epnum = decoded['epnum']
+        #print len(decoded['data'][3:3+length]), length, decoded['epnum']
+        #burst += ' '
 
 
 if __name__=='__main__':
@@ -170,16 +185,84 @@ if __name__=='__main__':
 
     # 220 = 0xdc = LINKTYPE_USB_LINUX_MMAPPED
     if p.datalink() == 220:
-        print 'USB!'
         try:
             while p != None:
                 (pktlen, data, timestamp) = p.next()
                 print_packet(pktlen, data, timestamp)
         except TypeError:
             pass
+        #print burst_data
+        # blocks start with n10500
+        import re
+        blocks = re.split(r"([0-9a-f]10500)", burst_data)
+        for block in blocks:
+            if len(block) > 6:
+                #print block
+                # strip out parity(?) bytes
+                b2 = "\x01\x05\x00" # HACK reinstate first 3 bytes so block matches capture
+                for i, c in enumerate(block.decode('hex')):
+                    if  i == 0 or (i + 4) % 9 != 0:
+                        b2 += c
+                block = b2
+                #print block
+                if block[6:8] == '\x3d\xdb':
+                    # found a block with date
+
+                    # FIXME either gaining or losing a byte here
+                    # some files have an extra byte after 3ddb but before year, some don't.
+                    # don't k now how to tell yet
+                    move = {}
+                    # year seems to be 2004 + n
+                    move['cal'] = struct.unpack('<H',block[24:26])[0]
+                    move['EPOC'] = struct.unpack('<H',block[26:28])[0]
+                    move['HRAvg'] = struct.unpack('B',block[21:22])[0]
+                    move['HRLimitHigh'] = struct.unpack('B',block[30:31])[0]
+                    move['HRLimitLow'] = struct.unpack('B',block[28:29])[0]
+                    move['HRMax'] = struct.unpack('B',block[22:23])[0]
+                    move['HRZone1'] = struct.unpack('B',block[37:38])[0]
+                    move['HRZone2'] = struct.unpack('B',block[38:39])[0]
+                    move['HRZone3'] = struct.unpack('B',block[39:40])[0]
+                    move['HRZone4'] = struct.unpack('B',block[40:41])[0]
+                    move['MaxSpeed'] = struct.unpack('<H',block[55:57])[0] / 256.00
+
+                    move['TimeYear'] = ord(block[8:9]) + 2004
+                    move['TimeMonth'] = ord(block[9:10])
+                    move['TimeDay'] = struct.unpack('b',block[10:11])[0]
+                    move['TimeHour'] = struct.unpack('b',block[11:12])[0]
+                    move['TimeMin'] = struct.unpack('b',block[12:13])[0]
+                    move['TimeSec'] = struct.unpack('b',block[13:14])[0]
+                    move['Time'] = "%04d-%02d-%02d %02d:%02d:%02d" % (move['TimeYear'], move['TimeMonth'], move['TimeDay'], move['TimeHour'], move['TimeMin'], move['TimeSec'])
+
+                    move['Distance'] = struct.unpack('<H',block[51:53])[0] * 10
+                    move['DurationHours'] = ord(block[14:15])
+                    move['DurationMin'] = ord(block[15:16])
+                    move['DurationSec'] = ord(block[16:17])
+                    move['DurationHundredths'] = ord(block[17:18])
+                    move['Duration'] = "%02d:%02d:%02d.%01d00" % (move['DurationHours'], move['DurationMin'], move['DurationSec'], move['DurationHundredths'])
+
+
+                    print move['Time']
+                    print 'Calories', move['cal'], 'HRAvg', move['HRAvg'], 'Distance', move['Distance'], 'MaxSpeed', move['MaxSpeed'], 'Duration', move['Duration']
+                    print move['HRZone1'], move['HRZone2'], move['HRZone3'], move['HRZone4']
+                    #print move
+                if block[7:8] == '\x00':
+                    # lap data (always?)
+                    print "laps in this data block", ord(block[6:7]) / 9.0 # 1 lap = 9 bytes
+                    pos = 8
+                    while pos < len(block) - 12:
+                        lap = {}
+                        lap['min'] = ord(block[pos:pos+1])
+                        lap['sec'] = ord(block[pos+1:pos+2])
+                        lap['msec'] = ord(block[pos+2:pos+3]) * 100
+                        lap['speed'] = struct.unpack('<H',block[pos+3:pos+5])[0] / 256.0
+                        lap['HR'] = ord(block[pos+7:pos+8])
+                        lap['distance'] = ord(block[pos+5:pos+6]) * 10
+                        pos = pos + 9
+
+                        print "%02d:%02d.%03d %fm/s %dBPM %dm" % (lap['min'], lap['sec'], lap['msec'], lap['speed'], lap['HR'], lap['distance'])
+
     else:
         print 'not USB :-('
-
 
         # as is the next() method
         # p.next() returns a (pktlen, data, timestamp) tuple 
